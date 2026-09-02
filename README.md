@@ -117,6 +117,32 @@ Things that specifically matter on Render:
    any passage that model heard which is missing from your transcript. This is the only
    real check on what a speech model silently left out.
 
+### The second pass
+
+Speech models drop sentences, and they do not drop the same ones twice. On one 22-minute
+bilingual consultation the *same* model on the *same* audio returned 2649, 2283 and 2319
+words on three runs — a 14% swing, entirely in what it chose to omit.
+
+So with *Second pass* ticked the audio is transcribed again with a **different** model, and
+any sentence the first pass lacks is folded in, marked `recovered`. On that consultation it
+recovered **48 sentences**, among them ones an independent cross-check had separately
+identified as missing ("I don't add sugar to my tea", "I do feel like your thyroid's a bit
+enlarged here").
+
+Two details that took measuring to get right:
+
+- **A second pass with the same model is nearly useless** — it repeats its own omissions
+  (3 recovered). The diarizing model, which is poor at transcribing, turns out to be the
+  best second opinion precisely because it fails differently (48 recovered).
+- **Deciding what is "missing" cannot be done by word overlap.** Consultations repeat stock
+  phrases, so a dropped sentence shares nearly every word with its neighbours: on a
+  repetitive transcript with three sentences removed, an overlap test recovered none of
+  them, and on real audio it called 7 of 10 present passages "missing". A passage now
+  counts as already present if it shares a run of four consecutive words with the
+  transcript; failing that, words are weighted by rarity, so a sentence is missing when its
+  rarest word — a name, a number, a dose — appears nowhere. That combination gave 0 false
+  positives on the real consultation.
+
 ### How much can be guaranteed?
 
 Nothing here can prove a transcript is correct — no speech system can. What it can do is

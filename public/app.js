@@ -16,6 +16,7 @@ const SPLIT_SLACK = 25;      // seconds either side of a target cut we may move 
 const MIN_CHUNK = 45;        // never leave a short chunk: short requests lose content
 const MIN_UNCOVERED = 2.0;   // ignore shorter untranscribed stretches in the self-check
 const UNCERTAIN = 0.5;       // token probability below which a word is worth checking
+const RUN_LENGTH = 4;        // consecutive words that prove a passage is already present
 
 const state = {
   file: null, result: null, busy: false, audio: null, textModel: null,
@@ -309,6 +310,10 @@ async function planChunks(file, opts) {
   // chunk is the worst case for these models: a 19-second part returned 10 words where 60
   // were spoken, while the 58- and 74-second parts of the same audio were complete.
   let count = Math.max(1, Math.round(duration / target));
+  // The recovery pass cuts the same audio into one more part, so every boundary lands
+  // somewhere different while the parts stay balanced — moving boundaries instead made the
+  // final part twice the size and it was rejected as over the 25 MB request limit.
+  if (opts.shift) count += 1;
   while (count > 1 && duration / count < MIN_CHUNK) count--;
 
   const cuts = [0];
@@ -324,14 +329,6 @@ async function planChunks(file, opts) {
   }
   cuts.push(duration);
 
-  // The recovery pass cuts the same audio in different places, so material the first pass
-  // dropped near a boundary — or in an unlucky context — sits somewhere else entirely.
-  if (opts.shift && cuts.length > 2) {
-    const half = (cuts[1] - cuts[0]) / 2;
-    for (let i = 1; i < cuts.length - 1; i++) {
-      cuts[i] = Math.min(Math.max(cuts[i] - half, cuts[i - 1] + MIN_CHUNK), duration - MIN_CHUNK);
-    }
-  }
 
   const base = file.name.replace(/\.[^.]+$/, '') || 'audio';
   const plans = [];
@@ -597,9 +594,17 @@ async function transcribe() {
     // A second pass over the same audio, cut in different places, catches sentences the
     // first pass dropped. Only what is genuinely absent is folded in.
     if ($('recover').checked) {
-      setStatus('Second pass — checking for sentences the first pass missed…', 88);
+      // A different model, not just different boundaries: re-running the same one repeats
+      // its own omissions. On a 22-minute consultation the same model recovered nothing,
+      // while a second model had heard 16 passages this one had missed.
+      // Measured on a 22-minute bilingual consultation: gpt-4o-mini-transcribe surfaced 3
+      // passages the first pass had missed, the diarizing model 16. It is slower, but it
+      // is the one that actually hears what the others drop.
+      const other = opts.model.includes('diarize') ? 'gpt-4o-transcribe' : 'gpt-4o-transcribe-diarize';
+      setStatus(`Second pass with ${other} — catching sentences the first pass missed…`, 88);
       try {
-        const second = await runTranscription({ ...opts, shift: true, speakers: false }, 'Second pass');
+        const second = await runTranscription(
+          { ...opts, model: other, shift: true, speakers: false }, 'Second pass');
         const extra = second.parts.flatMap((part) => part.units);
         result.recovered = mergeRecovered(result, extra);
         if (result.recovered) console.info('[recovery] folded in', result.recovered, 'missed sentences');
@@ -694,6 +699,7 @@ function adoptUnits(r, returned) {
         offset: origin ? origin.offset : 0,
         minP: origin ? origin.minP : undefined,
         uncertain: origin ? origin.uncertain : undefined,
+        recovered: origin ? origin.recovered : undefined,
       });
       if (share != null) cursor += share;
     }
@@ -1322,6 +1328,22 @@ const contentWords = (text) => text
  * number, a dose — so words are weighted by how seldom they occur, and a sentence whose
  * rarest words are absent counts as missing however familiar the rest of it looks.
  */
+/** Every word, in order and normalised — short words included, so runs stay contiguous. */
+const allWords = (text) => text
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9\s]/g, ' ')
+  .split(/\s+/)
+  .filter(Boolean);
+
+/** The set of every run of `size` consecutive words. */
+function wordRuns(words, size) {
+  const runs = new Set();
+  for (let i = 0; i + size <= words.length; i++) runs.add(words.slice(i, i + size).join(' '));
+  return runs;
+}
+
 function rarityIndex(units) {
   const frequency = new Map();
   for (const unit of units) {
@@ -1339,7 +1361,16 @@ function findMissing(primaryText, units, primaryUnits = null) {
   const total = corpus.length || 1;
   const weightOf = (word) => Math.log((total + 1) / ((frequency.get(word) || 0) + 1)) + 1;
 
+  // A passage that shares a run of four consecutive words with the transcript is already
+  // there — the two passes simply worded it slightly differently. Without this, ordinary
+  // rewordings ("they have" / "they've have") were reported as missing: on a real
+  // 22-minute consultation, 7 of 10 flagged passages turned out to be present.
+  const primaryRuns = wordRuns(allWords(primaryText), RUN_LENGTH);
+
   return units.filter((unit) => {
+    const runs = wordRuns(allWords(unit.text), RUN_LENGTH);
+    for (const run of runs) if (primaryRuns.has(run)) return false;
+
     const words = [...new Set(contentWords(unit.text))];
     if (words.length < 3) return false;
 
