@@ -56,6 +56,13 @@ Things that specifically matter on Render:
    chunk exceeded OpenAI's gateway timeout and came back as a bare `500 Internal Server
    Error`. So diarized runs are cut into **3-minute** parts and everything else into
    10-minute parts. A 21-minute call now transcribes in about 4 minutes.
+
+   **Parts are cut into equal lengths, never a target size plus a remainder.** Short
+   requests lose content badly — measured on 152 seconds of unbroken speech carrying 30
+   utterances: a 19-second trailing part returned 10 words where 60 were spoken (27/30
+   overall). Cutting the same audio into three equal ~50-second parts returned **30/30**.
+   The search for a silent cut point is also kept proportional to the part length, because
+   a wide search drifts and recreates the short part it was meant to avoid.
 2. **Paragraphs it by language.** Every unit of the transcript is language-labelled by
    `gpt-5.4-mini`, and a paragraph break is then made **deterministically** wherever the
    language changes — so a passage repeated or interpreted in another language simply
@@ -121,6 +128,12 @@ make the doubtful parts visible, and each check has a different reach:
 | token confidence | words the model itself doubted | confident mistakes |
 | cross-check | passages one model heard and the other didn't | errors both models share |
 | the pinned player | anything, if you listen | what you don't check |
+
+The loudness check needed one fix of its own: it estimated the noise floor from the 20th
+percentile, so on **continuous** speech — where there is no silence to measure — it called
+most of the recording silent (46 s of 152 s). The threshold is now capped at a fraction of
+the loud level, giving 152/152 s on continuous speech and exactly 60 detected regions for
+60 spoken utterances on audio with gaps.
 
 A measured example of the limits: on a 10-second clip where one of three sentences was
 dropped, the word-rate check passed at 123 words per minute — well inside normal speech —

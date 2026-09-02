@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { structureTranscript } = require('./structure.js');
+const whisperWebUI = require('./whisperwebui.js');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -24,7 +25,8 @@ const APP_PASSWORD = process.env.APP_PASSWORD || '';
 const CHUNK_SECONDS = Number(process.env.CHUNK_SECONDS) || 600;
 const DIARIZE_CHUNK_SECONDS = Number(process.env.DIARIZE_CHUNK_SECONDS) || 180;
 const OPENAI_URL = 'https://api.openai.com/v1/audio/transcriptions';
-const MAX_UPLOAD = 26 * 1024 * 1024; // OpenAI caps a single request at 25 MB
+const MAX_UPLOAD = 26 * 1024 * 1024;        // OpenAI caps a single request at 25 MB
+const MAX_UPLOAD_LOCAL = 400 * 1024 * 1024; // Model B is local: no such cap
 const MAX_JSON = 12 * 1024 * 1024;
 const UPSTREAM_TIMEOUT = 8 * 60 * 1000;
 const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || 'gpt-5.4-mini';
@@ -121,8 +123,9 @@ function header(req, name) {
 }
 
 async function handleTranscribe(req, res) {
+  const engine = header(req, 'x-engine') === 'B' ? 'B' : 'A';
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+  if (engine === 'A' && !apiKey) {
     return json(res, 500, {
       error: 'OPENAI_API_KEY is not set. Put it in a .env file next to server.js and restart.',
     });
@@ -130,11 +133,11 @@ async function handleTranscribe(req, res) {
 
   let buf;
   try {
-    buf = await readBody(req, MAX_UPLOAD);
+    buf = await readBody(req, engine === 'B' ? MAX_UPLOAD_LOCAL : MAX_UPLOAD);
   } catch (err) {
     return json(res, err.statusCode || 400, {
       error: err.statusCode === 413
-        ? 'That chunk is over the 25 MB per-request limit.'
+        ? (engine === 'B' ? 'That file is over 400 MB.' : 'That chunk is over the 25 MB per-request limit.')
         : 'Could not read the upload.',
     });
   }
@@ -146,6 +149,28 @@ async function handleTranscribe(req, res) {
   const prompt = header(req, 'x-prompt');
   const ext = path.extname(filename).slice(1).toLowerCase();
   const type = AUDIO_MIME[ext] || 'application/octet-stream';
+
+  // Model B: a local Whisper-WebUI instance, normalised to the same response shape.
+  if (engine === 'B') {
+    try {
+      const result = await whisperWebUI.transcribe(buf, {
+        filename,
+        type,
+        language,
+        diarize: header(req, 'x-diarize') === '1',
+      });
+      return json(res, 200, result);
+    } catch (err) {
+      console.warn(`[model-b] ${filename}: ${err.message}`);
+      const unreachable = /fetch failed|ECONNREFUSED/i.test(err.message);
+      return json(res, err.statusCode || 502, {
+        error: unreachable
+          ? `Model B is not running. Start Whisper-WebUI's backend, or point WHISPER_WEBUI_URL at it ` +
+            `(currently ${whisperWebUI.baseUrl()}).`
+          : err.message,
+      });
+    }
+  }
 
   // Only whisper-1 and the diarizing model return timestamps, in different shapes.
   const isDiarize = model.includes('diarize');
@@ -283,13 +308,15 @@ const server = http.createServer((req, res) => {
     return res.end('Sign in to use this transcriber.');
   }
   if (pathname === '/api/health') {
-    return json(res, 200, {
+    return whisperWebUI.probe().then((modelB) => json(res, 200, {
+      modelB,
+      modelBUrl: whisperWebUI.baseUrl(),
       hasKey: Boolean(process.env.OPENAI_API_KEY),
       maxUpload: MAX_UPLOAD,
       textModel: TEXT_MODEL,
       chunkSeconds: CHUNK_SECONDS,
       diarizeChunkSeconds: DIARIZE_CHUNK_SECONDS,
-    });
+    }));
   }
   if (pathname === '/api/transcribe') {
     if (req.method !== 'POST') return json(res, 405, { error: 'Use POST.' });

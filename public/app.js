@@ -13,8 +13,11 @@ let CHUNK_SECONDS = 600;     // 10 min @16 kHz mono ≈ 19 MB — under the 25 M
 let DIARIZE_CHUNK_SECONDS = 180;
 const REQUEST_CONCURRENCY = 3;
 const SPLIT_SLACK = 25;      // seconds either side of a target cut we may move to find silence
+const MIN_CHUNK = 45;        // never leave a short chunk: short requests lose content
 const MIN_UNCOVERED = 2.0;   // ignore shorter untranscribed stretches in the self-check
 const UNCERTAIN = 0.5;       // token probability below which a word is worth checking
+
+const engineNow = () => document.querySelector('input[name="engine"]:checked').value;
 
 const state = {
   file: null, result: null, busy: false, audio: null, textModel: null,
@@ -219,7 +222,10 @@ function speechRegions(env) {
   const sorted = Float64Array.from(env).sort();
   const noise = sorted[Math.floor(sorted.length * 0.2)] || 0;
   const loud = sorted[Math.floor(sorted.length * 0.95)] || 0;
-  const threshold = Math.max(noise * 2.5, loud * 0.04, 0.003);
+  // With continuous speech there is no silence to measure, so the 20th percentile is itself
+  // speech and 2.5x it would classify most of the recording as silent. Cap the threshold
+  // at a fraction of the loud level so that cannot happen.
+  const threshold = Math.max(0.003, Math.min(noise * 2.5, loud * 0.15));
   const hangover = Math.round(0.5 * BIN_HZ);
   const minRun = Math.round(0.3 * BIN_HZ);
 
@@ -250,10 +256,10 @@ function speechWithin(start, span) {
 }
 
 /** Move a cut to the quietest 300 ms nearby, so a chunk never breaks mid-word. */
-function findQuietCut(env, target, duration) {
+function findQuietCut(env, target, duration, slack = SPLIT_SLACK) {
   const width = Math.max(1, Math.round(0.3 * BIN_HZ));
-  const lo = Math.max(0, Math.floor((target - SPLIT_SLACK) * BIN_HZ));
-  const hi = Math.min(env.length, Math.ceil((target + SPLIT_SLACK) * BIN_HZ));
+  const lo = Math.max(0, Math.floor((target - slack) * BIN_HZ));
+  const hi = Math.min(env.length, Math.ceil((target + slack) * BIN_HZ));
   let best = target;
   let bestLevel = Infinity;
   for (let i = lo; i + width <= hi; i++) {
@@ -283,6 +289,12 @@ async function renderSlice(audioBuffer, start, duration) {
  * model is too slow to be given long chunks.
  */
 async function planChunks(file, opts) {
+  // Model B is local: no request size limit, and Whisper-WebUI segments long audio itself.
+  if (opts.engine === 'B') {
+    if (opts.speakers) { try { await ensureAudio(file); } catch { /* linear fallback */ } }
+    return [{ index: 0, blob: file, name: file.name, offset: 0, span: $('player').duration || 0 }];
+  }
+
   // With speakers on, every chunk is also sent to the diarizing model, which times out on
   // long audio — so the shorter limit governs.
   const target = (opts.model.includes('diarize') || opts.speakers)
@@ -301,11 +313,22 @@ async function planChunks(file, opts) {
   setStatus('Decoding the audio so it can be split on silence…', 4);
   const { buffer, env, duration } = await ensureAudio(file);
 
+  // Cut into equal parts rather than target-sized ones with a remainder. A short trailing
+  // chunk is the worst case for these models: a 19-second part returned 10 words where 60
+  // were spoken, while the 58- and 74-second parts of the same audio were complete.
+  let count = Math.max(1, Math.round(duration / target));
+  while (count > 1 && duration / count < MIN_CHUNK) count--;
+
   const cuts = [0];
-  while (cuts[cuts.length - 1] + target < duration) {
-    const aim = cuts[cuts.length - 1] + target;
-    const cut = findQuietCut(env, aim, duration);
-    cuts.push(cut > cuts[cuts.length - 1] + 1 ? cut : aim);
+  for (let i = 1; i < count; i++) {
+    // Re-aim from the previous actual cut so a nudge towards silence cannot accumulate,
+    // and keep the search window proportional to the chunk — a wide one drifts and leaves
+    // a short chunk, which is exactly what loses content.
+    const done = cuts[cuts.length - 1];
+    const remaining = count - i + 1;
+    const length = (duration - done) / remaining;
+    const cut = findQuietCut(env, done + length, duration, Math.min(SPLIT_SLACK, length * 0.15));
+    cuts.push(Math.min(Math.max(cut, done + MIN_CHUNK), duration - MIN_CHUNK));
   }
   cuts.push(duration);
 
@@ -333,6 +356,8 @@ async function sendAudio(blob, name, opts) {
       'Content-Type': 'application/octet-stream',
       'x-filename': encodeURIComponent(name),
       'x-model': opts.model,
+      'x-engine': opts.engine || 'A',
+      'x-diarize': opts.speakers ? '1' : '0',
       'x-language': encodeURIComponent(opts.language || ''),
       'x-prompt': encodeURIComponent(opts.prompt || ''),
     },
@@ -493,6 +518,7 @@ async function runTranscription(opts, note) {
           end: offset + seg.end,
           speaker: seg.speaker,
           offset,
+          minP: typeof seg.confidence === 'number' ? seg.confidence : undefined,
         }))
       : sentenceUnits(text, offset);
     attachConfidence(units, data.logprobs);
@@ -526,6 +552,7 @@ async function transcribe() {
     language: $('language').value,
     prompt: $('prompt').value.trim(),
     speakers: $('speakers').checked,
+    engine: engineNow(),
   };
 
   try {
@@ -534,6 +561,7 @@ async function transcribe() {
       parts,
       duration,
       model: opts.model,
+      engine: opts.engine,
       source: state.file.name,
       language: parts.find((p) => p.language)?.language || null,
       paragraphs: null,
@@ -926,7 +954,7 @@ function metaLine(r) {
   if (interpreted) bits.push(`${interpreted} interpreted`);
   const shaky = (r.paragraphs || []).filter((p) => paragraphConfidence(r, p) < UNCERTAIN).length;
   if (shaky) bits.push(`${shaky} to check`);
-  bits.push(`model: ${r.model}`);
+  bits.push(r.engine === 'B' ? 'engine: Whisper-WebUI (local)' : `model: ${r.model}`);
   if (r.parts.length > 1) bits.push(`${r.parts.length} parts`);
   return bits.join(' · ');
 }
@@ -1187,7 +1215,7 @@ function addCrossCheckUi(r, box) {
   const btn = document.createElement('button');
   btn.className = 'ghost crossBtn';
   btn.type = 'button';
-  btn.textContent = `Cross-check with ${VERIFIERS[r.model] || 'gpt-4o-transcribe'}`;
+  btn.textContent = `Cross-check with ${verifierFor(r)}`;
   btn.onclick = () => { btn.disabled = true; crossCheck(); };
   box.append(btn);
 }
@@ -1227,6 +1255,10 @@ const VERIFIERS = {
   'whisper-1': 'gpt-4o-transcribe',
 };
 
+/** Which model should check this transcript — always a different one than produced it. */
+const verifierFor = (r) =>
+  (r.engine === 'B' ? 'gpt-4o-transcribe' : (VERIFIERS[r.model] || 'gpt-4o-transcribe'));
+
 const contentWords = (text) => text
   .toLowerCase()
   .normalize('NFD')
@@ -1249,13 +1281,13 @@ function findMissing(primaryText, units) {
 async function crossCheck() {
   const r = state.result;
   if (!r || state.busy) return;
-  const verifier = VERIFIERS[r.model] || 'gpt-4o-transcribe';
+  const verifier = verifierFor(r);
   state.busy = true;
   $('go').disabled = true;
   startClock();
   try {
     const { parts } = await runTranscription(
-      { model: verifier, language: $('language').value, prompt: $('prompt').value.trim() },
+      { model: verifier, language: $('language').value, prompt: $('prompt').value.trim(), engine: 'A' },
       `Cross-checking with ${verifier}`,
     );
     const units = parts.flatMap((part) => part.units);
@@ -1388,6 +1420,7 @@ const builders = {
   json: (r) => JSON.stringify({
     source: r.source,
     model: r.model,
+    engine: r.engine === 'B' ? 'whisper-webui-local' : r.model,
     paragraphModel: state.textModel || null,
     duration: r.duration,
     check: r.check,
@@ -1530,8 +1563,38 @@ document.querySelectorAll('.tab').forEach((tab) => {
   };
 });
 
+const SPEAKER_HINT_A = $('speakers').closest('.field').querySelector('.hint').innerHTML;
+const SPEAKER_HINT_B =
+  'Whisper-WebUI labels speakers with its own pyannote diarization, which needs an ' +
+  '<code>HF_TOKEN</code> configured on that side. Each change of speaker starts a new paragraph.';
+
+function applyEngine() {
+  const b = engineNow() === 'B';
+  $('modelField').style.opacity = b ? '.5' : '';
+  $('model').disabled = b;
+  $('prompt').disabled = b;
+  $('speakers').closest('.field').querySelector('.hint').innerHTML = b ? SPEAKER_HINT_B : SPEAKER_HINT_A;
+  $('modelBHint').classList.toggle('hidden', !b || state.modelB !== false);
+}
+document.querySelectorAll('input[name="engine"]').forEach((radio) => { radio.onchange = applyEngine; });
+
 fetch('/api/health').then((r) => r.json()).then((h) => {
   state.textModel = h.textModel;
+  state.modelB = h.modelB;
+  const radioB = document.querySelector('input[name="engine"][value="B"]');
+  if (!h.modelB) {
+    radioB.disabled = true;
+    $('modelBState').textContent = 'not running on ' + (h.modelBUrl || 'localhost:8000');
+    $('modelBHint').innerHTML =
+      'Model B needs a local Whisper-WebUI backend. Install it from ' +
+      '<code>github.com/jhj0517/Whisper-WebUI</code>, then run ' +
+      '<code>uvicorn backend.main:app --host 0.0.0.0 --port 8000</code>. ' +
+      'Point <code>WHISPER_WEBUI_URL</code> elsewhere if it runs on another address.';
+    $('modelBHint').classList.remove('hidden');
+  } else {
+    $('modelBState').textContent = 'local · free · audio never leaves the machine';
+  }
+  applyEngine();
   if (h.chunkSeconds) CHUNK_SECONDS = h.chunkSeconds;
   if (h.diarizeChunkSeconds) DIARIZE_CHUNK_SECONDS = h.diarizeChunkSeconds;
   if (!h.hasKey) {

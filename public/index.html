@@ -32,7 +32,21 @@
   </section>
 
   <section class="card options">
-    <div class="field">
+    <div class="field wide">
+      <label for="engine">Engine</label>
+      <div class="engineRow">
+        <label class="engineOption">
+          <input type="radio" name="engine" value="A" checked />
+          <span><strong>Model A</strong> — OpenAI API<em>cloud · fastest · costs per minute</em></span>
+        </label>
+        <label class="engineOption">
+          <input type="radio" name="engine" value="B" />
+          <span><strong>Model B</strong> — Whisper-WebUI<em id="modelBState">local · free · audio never leaves the machine</em></span>
+        </label>
+      </div>
+      <p id="modelBHint" class="hint hidden"></p>
+    </div>
+    <div class="field" id="modelField">
       <label for="model">Model</label>
       <select id="model">
         <option value="gpt-4o-transcribe">gpt-4o-transcribe — recommended, most complete on bilingual audio</option>
