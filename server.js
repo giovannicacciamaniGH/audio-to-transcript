@@ -26,7 +26,12 @@ const CHUNK_SECONDS = Number(process.env.CHUNK_SECONDS) || 600;
 const DIARIZE_CHUNK_SECONDS = Number(process.env.DIARIZE_CHUNK_SECONDS) || 180;
 const OPENAI_URL = 'https://api.openai.com/v1/audio/transcriptions';
 const MAX_UPLOAD = 26 * 1024 * 1024;        // OpenAI caps a single request at 25 MB
-const MAX_UPLOAD_LOCAL = 400 * 1024 * 1024; // Model B is local: no such cap
+// Model B has no 25 MB cap, but that larger buffer is only safe where Model B actually
+// exists. On a hosted instance (512 MB of RAM) an engine-B request would otherwise let a
+// single upload exhaust memory, so the big limit applies only when a backend is configured.
+const MAX_UPLOAD_LOCAL = process.env.WHISPER_WEBUI_URL
+  ? 400 * 1024 * 1024
+  : 64 * 1024 * 1024;
 const MAX_JSON = 12 * 1024 * 1024;
 const UPSTREAM_TIMEOUT = 8 * 60 * 1000;
 const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || 'gpt-5.4-mini';
