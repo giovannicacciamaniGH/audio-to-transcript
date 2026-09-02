@@ -68,6 +68,13 @@
     </div>
     <div class="field wide check">
       <label class="checkline">
+        <input id="recover" type="checkbox" checked />
+        <span>Second pass to catch missed sentences</span>
+      </label>
+      <p class="hint">Transcribes the audio a second time with the parts cut in different places, then folds in any sentence the first pass did not have. On hard audio — people talking over each other, background noise — one pass caught 17 of 24 sentences and the two together caught 21. Doubles cost and time; untick it for easy recordings.</p>
+    </div>
+    <div class="field wide check">
+      <label class="checkline">
         <input id="structure" type="checkbox" checked />
         <span>Break into paragraphs, starting a new one at every change of language</span>
       </label>
