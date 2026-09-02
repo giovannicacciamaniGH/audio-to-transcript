@@ -68,9 +68,17 @@ Things that specifically matter on Render:
    pieces reproduce the original text word for word — anything paraphrased or translated
    is rejected and the unit is left intact.
 
-   **Speakers:** tick *Identify speakers* to use `gpt-4o-transcribe-diarize`, the only
-   model that reports who is talking. It labels voices A, B, C… and each change of
-   speaker also starts a new paragraph.
+   **Speakers:** tick *Identify speakers*. The transcript still comes from
+   `gpt-4o-transcribe`; `gpt-4o-transcribe-diarize` runs alongside it purely to report who
+   is speaking when, and its own text is discarded.
+
+   This split is not stylistic. On a 9-minute bilingual recording carrying 60 marked
+   utterances, `gpt-4o-transcribe` returned **60/60** while the diarizing model returned
+   **36/60** — losing 40%, consistently, in all three parts tested. Speaker turns are
+   therefore mapped onto the complete transcript by position in the *speech* (silence
+   excluded, using the loudness envelope), which also gives the transcript approximate
+   timestamps. Measured on that recording: 60/60 utterances kept, speaker attribution 98%
+   and 100% for the two voices. It doubles the cost and roughly doubles the time.
 
    **Across parts:** the API assigns speaker letters *per request*, so "Speaker A" in
    part 1 and part 5 need not be the same person — measured on a 4-part recording, the

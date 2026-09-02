@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 
+const DIARIZE_MODEL = 'gpt-4o-transcribe-diarize';
 const TARGET_RATE = 16000;   // what the speech models use internally
 const BIN_HZ = 10;           // loudness envelope resolution: one bin per 100 ms
 const DIRECT_LIMIT = 24 * 1024 * 1024;  // send the file untouched below this
@@ -239,6 +240,15 @@ function speechRegions(env) {
   return regions;
 }
 
+/** Speech intervals inside one chunk, relative to its start (empty if not decoded). */
+function speechWithin(start, span) {
+  if (!state.audio || !span) return [];
+  const end = start + span;
+  return speechRegions(state.audio.env)
+    .filter(([a, b]) => b > start && a < end)
+    .map(([a, b]) => [Math.max(a, start) - start, Math.min(b, end) - start]);
+}
+
 /** Move a cut to the quietest 300 ms nearby, so a chunk never breaks mid-word. */
 function findQuietCut(env, target, duration) {
   const width = Math.max(1, Math.round(0.3 * BIN_HZ));
@@ -272,13 +282,21 @@ async function renderSlice(audioBuffer, start, duration) {
  * files are cut on silence, and diarized ones are cut by duration as well, because that
  * model is too slow to be given long chunks.
  */
-async function planChunks(file, model) {
-  const target = model.includes('diarize') ? DIARIZE_CHUNK_SECONDS : CHUNK_SECONDS;
+async function planChunks(file, opts) {
+  // With speakers on, every chunk is also sent to the diarizing model, which times out on
+  // long audio — so the shorter limit governs.
+  const target = (opts.model.includes('diarize') || opts.speakers)
+    ? DIARIZE_CHUNK_SECONDS
+    : CHUNK_SECONDS;
   const known = $('player').duration;
   const overLimit = file.size > DIRECT_LIMIT;
   const overTime = Number.isFinite(known) && known > target * 1.25;
 
-  if (!overLimit && !overTime) return [{ index: 0, blob: file, name: file.name, offset: 0 }];
+  if (!overLimit && !overTime) {
+    // Speaker mapping needs the loudness envelope, so decode even a short file.
+    if (opts.speakers) { try { await ensureAudio(file); } catch { /* mapping falls back to linear */ } }
+    return [{ index: 0, blob: file, name: file.name, offset: 0, span: known || 0 }];
+  }
 
   setStatus('Decoding the audio so it can be split on silence…', 4);
   const { buffer, env, duration } = await ensureAudio(file);
@@ -324,6 +342,56 @@ async function sendAudio(blob, name, opts) {
   const data = await res.json().catch(() => ({ error: 'Unreadable response from the server.' }));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status}).`);
   return data;
+}
+
+/**
+ * The diarizing model loses a large share of the words (measured: 36 of 60 utterances,
+ * versus 60 of 60 for gpt-4o-transcribe), so it is never used for the transcript itself.
+ * It is asked only WHO speaks WHEN, and those turns are mapped onto the complete text.
+ *
+ * Position in the text maps to position in the *speech*, not the wall clock: silence is
+ * excluded, so a long pause does not shift every later attribution.
+ */
+function mapTextToSpeech(speechIntervals, span) {
+  const intervals = speechIntervals.length ? speechIntervals : [[0, span]];
+  const total = intervals.reduce((sum, [a, b]) => sum + (b - a), 0) || span;
+  return (fraction) => {
+    let target = Math.max(0, Math.min(1, fraction)) * total;
+    for (const [a, b] of intervals) {
+      const length = b - a;
+      if (target <= length) return a + target;
+      target -= length;
+    }
+    return intervals[intervals.length - 1][1];
+  };
+}
+
+function speakerAt(segments, time) {
+  for (const seg of segments) if (time >= seg.start && time <= seg.end) return seg.speaker;
+  let best = null;
+  let bestGap = Infinity;
+  for (const seg of segments) {
+    const gap = time < seg.start ? seg.start - time : time - seg.end;
+    if (gap < bestGap) { bestGap = gap; best = seg; }
+  }
+  return best ? best.speaker : null;
+}
+
+/** Give each unit an estimated time and the speaker talking at that moment. */
+function attachSpeakers(units, segments, { start, span, speech }) {
+  if (!units.length) return;
+  const chars = units.reduce((n, u) => n + u.text.length, 0) || 1;
+  const toTime = mapTextToSpeech(speech, span);
+  let seen = 0;
+  for (const unit of units) {
+    const from = toTime(seen / chars);
+    seen += unit.text.length;
+    const to = toTime(seen / chars);
+    unit.start = start + from;
+    unit.end = start + Math.max(to, from + 0.2);
+    unit.estimated = true;
+    if (segments.length) unit.speaker = speakerAt(segments, (from + to) / 2);
+  }
 }
 
 /** Split a chunk's plain text into units when the model returns no timestamps. */
@@ -387,7 +455,7 @@ function rebuild(r) {
 
 /** Transcribe the loaded file with the given options, chunking only when necessary. */
 async function runTranscription(opts, note) {
-  const plans = await planChunks(state.file, opts.model);
+  const plans = await planChunks(state.file, opts);
   let done = 0;
   const report = () => setStatus(
     plans.length > 1
@@ -401,7 +469,18 @@ async function runTranscription(opts, note) {
     throwIfCancelled();
     // Slices are rendered inside the worker so only a few exist in memory at once.
     const blob = plan.blob || await renderSlice(plan.buffer, plan.start, plan.span);
-    const data = await sendAudio(blob, plan.name, opts);
+
+    // The transcript always comes from the verbatim model. When speakers are wanted the
+    // diarizing model runs on the same audio, but only its turns are used.
+    const [data, turns] = await Promise.all([
+      sendAudio(blob, plan.name, opts),
+      opts.speakers
+        ? sendAudio(blob, plan.name, { ...opts, model: DIARIZE_MODEL }).catch((err) => {
+            console.warn('[speakers] diarization failed for this part:', err.message);
+            return null;
+          })
+        : null,
+    ]);
     done++;
     report();
 
@@ -417,6 +496,14 @@ async function runTranscription(opts, note) {
         }))
       : sentenceUnits(text, offset);
     attachConfidence(units, data.logprobs);
+
+    if (turns && turns.segments.length && !data.segments.length) {
+      attachSpeakers(units, turns.segments, {
+        start: offset,
+        span: plan.span || data.duration || turns.duration || 0,
+        speech: speechWithin(offset, plan.span || turns.duration || 0),
+      });
+    }
     return { offset, text, units, language: data.language || null, duration: data.duration ?? plan.span };
   });
 
@@ -438,6 +525,7 @@ async function transcribe() {
     model: $('model').value,
     language: $('language').value,
     prompt: $('prompt').value.trim(),
+    speakers: $('speakers').checked,
   };
 
   try {
@@ -1386,12 +1474,6 @@ $('clearBtn').onclick = () => {
   $('result').classList.add('hidden');
   $('go').disabled = true;
 };
-
-const DIARIZE_MODEL = 'gpt-4o-transcribe-diarize';
-$('speakers').onchange = () => {
-  $('model').value = $('speakers').checked ? DIARIZE_MODEL : 'gpt-4o-transcribe';
-};
-$('model').onchange = () => { $('speakers').checked = $('model').value === DIARIZE_MODEL; };
 
 $('cancelBtn').onclick = () => {
   if (state.abort) state.abort.abort();

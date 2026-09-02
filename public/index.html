@@ -64,7 +64,7 @@
         <input id="speakers" type="checkbox" />
         <span>Identify speakers (A, B, C…)</span>
       </label>
-      <p class="hint">Switches to <code>gpt-4o-transcribe-diarize</code>, the only model that reports who is speaking. Every change of speaker also starts a new paragraph. It gives timestamps too, but it occasionally translates a line instead of transcribing it — use the cross-check button afterwards.</p>
+      <p class="hint">The transcript still comes from the model above, which is the complete one. <code>gpt-4o-transcribe-diarize</code> runs alongside it purely to tell who is speaking when — on its own it loses about 40% of the words, so its text is discarded. Speaker turns are mapped onto the full transcript, and each change of speaker starts a new paragraph. Doubles the cost and the time.</p>
     </div>
     <div class="field wide check">
       <label class="checkline">
