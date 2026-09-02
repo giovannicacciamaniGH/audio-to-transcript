@@ -1,0 +1,25 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+# Deploy: push this repo to GitHub, then New > Blueprint in Render and pick it.
+services:
+  - type: web
+    name: audio-to-transcript
+    runtime: node
+    plan: starter          # free spins down after 15 min idle; a wake-up costs ~1 min
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # Both secrets are entered in the Render dashboard, never committed.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      # Render cuts a request at ~100 s, so keep each upstream call comfortably shorter.
+      - key: DIARIZE_CHUNK_SECONDS
+        value: "120"
+      - key: CHUNK_SECONDS
+        value: "420"

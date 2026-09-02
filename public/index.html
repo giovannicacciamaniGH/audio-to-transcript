@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Audio → Transcript</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<main class="wrap">
+  <header class="head">
+    <h1>Audio → Transcript</h1>
+    <p class="sub">Drop an audio or video file. It is transcribed with the OpenAI speech-to-text API, split into paragraphs at every change of language, and checked back against the audio so you can see nothing was dropped.</p>
+    <div id="keyWarning" class="banner hidden"></div>
+  </header>
+
+  <section id="drop" class="drop" tabindex="0" role="button" aria-label="Choose an audio file">
+    <input id="file" type="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.webm,.ogg,.flac,.mp4,.mov" hidden />
+    <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+    <p class="dropTitle">Drop a file here, or <span class="link">browse</span></p>
+    <p class="dropHint">mp3 · m4a · wav · webm · ogg · flac · mp4 · mov — any length</p>
+  </section>
+
+  <section id="fileCard" class="card hidden">
+    <div class="fileRow">
+      <div class="fileMeta">
+        <strong id="fileName">—</strong>
+        <span id="fileInfo" class="muted"></span>
+      </div>
+      <button id="clearBtn" class="ghost" type="button">Remove</button>
+    </div>
+  </section>
+
+  <section class="card options">
+    <div class="field">
+      <label for="model">Model</label>
+      <select id="model">
+        <option value="gpt-4o-transcribe">gpt-4o-transcribe — recommended, most complete on bilingual audio</option>
+        <option value="gpt-4o-transcribe-diarize">gpt-4o-transcribe-diarize — adds timestamps &amp; speakers</option>
+        <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe — fast &amp; cheap</option>
+        <option value="whisper-1">whisper-1 — cheapest, but drops the second language in bilingual audio</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="language">Language</label>
+      <select id="language">
+        <option value="">Auto-detect</option>
+        <option value="en">English</option>
+        <option value="it">Italian</option>
+        <option value="es">Spanish</option>
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="pt">Portuguese</option>
+        <option value="nl">Dutch</option>
+        <option value="zh">Chinese</option>
+        <option value="ja">Japanese</option>
+        <option value="ar">Arabic</option>
+        <option value="hi">Hindi</option>
+        <option value="ru">Russian</option>
+      </select>
+    </div>
+    <div class="field wide check">
+      <label class="checkline">
+        <input id="speakers" type="checkbox" />
+        <span>Identify speakers (A, B, C…)</span>
+      </label>
+      <p class="hint">Switches to <code>gpt-4o-transcribe-diarize</code>, the only model that reports who is speaking. Every change of speaker also starts a new paragraph. It gives timestamps too, but it occasionally translates a line instead of transcribing it — use the cross-check button afterwards.</p>
+    </div>
+    <div class="field wide check">
+      <label class="checkline">
+        <input id="structure" type="checkbox" checked />
+        <span>Break into paragraphs, starting a new one at every change of language</span>
+      </label>
+      <p class="hint">For bilingual or interpreted recordings: each paragraph is labelled with the language spoken in it, so a passage repeated in another language simply becomes its own paragraph. Leave Language on auto-detect for these.</p>
+    </div>
+    <div class="field wide">
+      <label for="prompt">Hint <span class="muted">(optional — names, jargon, spelling to expect)</span></label>
+      <input id="prompt" type="text" placeholder="e.g. radical prostatectomy, Cacciamani, USC Urology" />
+    </div>
+  </section>
+
+  <button id="go" class="primary" type="button" disabled>Transcribe</button>
+
+  <section id="progress" class="card progress hidden">
+    <div class="bar"><div id="barFill" class="fill"></div></div>
+    <div class="progressFoot">
+      <p id="status" class="muted">Working…</p>
+      <button id="cancelBtn" class="ghost" type="button">Cancel</button>
+    </div>
+  </section>
+
+  <section id="error" class="card error hidden"></section>
+
+  <section id="result" class="card result hidden">
+    <div class="resultHead">
+      <div class="tabs">
+        <button class="tab active" data-view="text" type="button">Transcript</button>
+        <button class="tab" data-view="segments" type="button">Timestamps</button>
+      </div>
+      <div class="actions">
+        <button id="copyBtn" class="ghost" type="button">Copy</button>
+        <div class="menu">
+          <button id="downloadBtn" class="download" type="button" aria-haspopup="true" aria-expanded="false">
+            <svg viewBox="0 0 24 24" class="dlIcon" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg>
+            Download
+          </button>
+          <div id="downloadMenu" class="menuList hidden" role="menu">
+            <button data-dl="csv" type="button" role="menuitem">Spreadsheet <span>.csv</span></button>
+            <button data-dl="txt" type="button" role="menuitem">Transcript <span>.txt</span></button>
+            <button data-dl="json" type="button" role="menuitem">Full data <span>.json</span></button>
+            <button data-dl="srt" class="dl-ts" type="button" role="menuitem">Subtitles <span>.srt</span></button>
+            <button data-dl="vtt" class="dl-ts" type="button" role="menuitem">Subtitles <span>.vtt</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p id="resultMeta" class="muted meta"></p>
+    <div id="legend" class="legend hidden"></div>
+    <div id="coverage" class="coverage hidden"></div>
+    <div id="viewText" class="transcript"></div>
+    <div id="viewSegments" class="segments hidden"></div>
+  </section>
+</main>
+
+<div id="playerBar" class="playerBar hidden">
+  <span id="playerName" class="playerName"></span>
+  <audio id="player" controls class="player"></audio>
+</div>
+
+<script src="/voiceprint.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

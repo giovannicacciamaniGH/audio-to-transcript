@@ -1,0 +1,13 @@
+{
+  "name": "audio-to-transcript",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Upload an audio file, get a transcript from the OpenAI speech-to-text API.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
