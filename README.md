@@ -4,7 +4,7 @@ Upload an audio (or video) file in the browser and get a full transcript back fr
 OpenAI speech-to-text API, **split into paragraphs at every change of language** and
 checked back against the audio so you can see nothing was dropped.
 
-No dependencies to install — just Node 20+
+No dependencies to install — just Node 20+.
 
 ## Setup
 
