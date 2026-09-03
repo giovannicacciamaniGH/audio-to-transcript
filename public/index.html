@@ -62,7 +62,17 @@
     <div class="field wide check">
       <label class="checkline">
         <input id="speakers" type="checkbox" />
-        <span>Identify speakers (A, B, C…)</span>
+        <span>Identify speakers</span>
+      </label>
+      <label class="checkline speakerCountRow">
+        <span>How many people are in the recording?</span>
+        <select id="speakerCount">
+          <option value="">detect automatically</option>
+          <option value="2">2</option>
+          <option value="3" selected>3 — clinician, patient, interpreter</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
       </label>
       <p class="hint">The transcript still comes from the model above, which is the complete one. <code>gpt-4o-transcribe-diarize</code> runs alongside it purely to tell who is speaking when — on its own it loses about 40% of the words, so its text is discarded. Speaker turns are mapped onto the full transcript, and each change of speaker starts a new paragraph. Doubles the cost and the time.</p>
     </div>

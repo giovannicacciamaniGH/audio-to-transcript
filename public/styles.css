@@ -279,3 +279,6 @@ body.hasPlayer { padding-bottom: 68px; }
   .badge.lowconf { background: hsl(40 45% 20%); color: hsl(42 85% 74%); border-color: hsl(40 40% 40%); }
 }
 
+
+.speakerCountRow { margin: 8px 0 0 26px; gap: 8px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.speakerCountRow select { width: auto; padding: 4px 8px; font-size: 12.5px; }

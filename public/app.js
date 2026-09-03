@@ -9,7 +9,7 @@ const DIRECT_LIMIT = 24 * 1024 * 1024;  // send the file untouched below this
 // Chunk lengths come from the server so a deployment can shorten them to fit a hosting
 // proxy's request timeout. The diarizing model needs roughly half the audio's duration to
 // process, so long chunks hit OpenAI's own gateway timeout (a 10-minute chunk returns 500).
-let CHUNK_SECONDS = 120;     // long parts drop short interjections; see the server for the measurement
+let CHUNK_SECONDS = 600;     // short parts make the models loop; see the server for the measurement
 let DIARIZE_CHUNK_SECONDS = 180;
 const REQUEST_CONCURRENCY = 3;
 const SPLIT_SLACK = 25;      // seconds either side of a target cut we may move to find silence
@@ -476,8 +476,32 @@ function attachConfidence(units, tokens) {
   }
 }
 
+/**
+ * These models sometimes get stuck repeating a sentence — on one consultation a single
+ * line came back nine times in a row. A run of three or more identical sentences is
+ * always that failure, never speech, so it collapses to one.
+ */
+function collapseLoops(units) {
+  const key = (u) => u.text.toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const out = [];
+  let run = [];
+  const flush = () => {
+    if (!run.length) return;
+    out.push(run[0]);
+    if (run.length === 2) out.push(run[1]);   // a genuine immediate repeat is possible
+    run = [];
+  };
+  for (const unit of units) {
+    if (run.length && key(unit) === key(run[0])) run.push(unit);
+    else { flush(); run = [unit]; }
+  }
+  flush();
+  return out;
+}
+
 function rebuild(r) {
-  r.units = r.parts.flatMap((p) => p.units).map((u, i) => ({ ...u, i }));
+  r.units = collapseLoops(r.parts.flatMap((p) => p.units)).map((u, i) => ({ ...u, i }));
   r.segments = r.units.filter((u) => u.start != null);
   r.text = r.parts.map((p) => p.text).filter(Boolean).join('\n\n');
   return r;
@@ -650,7 +674,8 @@ async function transcribe() {
     if (result.parts.length > 1 && state.audio && window.voiceprint) {
       setStatus('Matching voices across the parts…', 91);
       try {
-        const report = voiceprint.unifySpeakers(result.units, state.audio.buffer);
+        const expected = Number($('speakerCount').value) || null;
+        const report = voiceprint.unifySpeakers(result.units, state.audio.buffer, { target: expected });
         if (report) {
           result.voices = report;
           console.info('[voices]', report.voices, 'distinct, threshold', report.threshold,
@@ -675,6 +700,7 @@ async function transcribe() {
         if (!res.ok) throw new Error(data.error || `Paragraphing failed (${res.status}).`);
         if (data.units && data.units.length) adoptUnits(result, data.units);
         result.paragraphs = splitOnSpeaker(result, data.paragraphs);
+        result.roles = inferRoles(result);
       } catch (err) {
         result.structureError = err.message || String(err); // the transcript itself is fine
       }
@@ -759,6 +785,55 @@ function orderSpeakers(units) {
   return rename;
 }
 
+/**
+ * In an interpreted consultation the cast is always the same three people, and the
+ * languages give them away: the interpreter is the only one who speaks both, the clinician
+ * speaks the clinic's language, the patient the other. Naming them beats "Speaker A".
+ */
+function inferRoles(r) {
+  if (!r.paragraphs || !r.paragraphs.length) return null;
+
+  const bySpeaker = new Map();
+  const firstAt = new Map();
+  r.paragraphs.forEach((para, position) => {
+    if (!para.speaker) return;
+    if (!bySpeaker.has(para.speaker)) bySpeaker.set(para.speaker, new Map());
+    if (!firstAt.has(para.speaker)) firstAt.set(para.speaker, position);
+    const langs = bySpeaker.get(para.speaker);
+    const weight = para.units.length || 1;
+    langs.set(para.lang, (langs.get(para.lang) || 0) + weight);
+  });
+  if (bySpeaker.size < 2) return null;
+
+  const profile = [...bySpeaker].map(([speaker, langs]) => {
+    const total = [...langs.values()].reduce((a, b) => a + b, 0) || 1;
+    const ranked = [...langs].sort((a, b) => b[1] - a[1]);
+    const secondShare = ranked[1] ? ranked[1][1] / total : 0;
+    return { speaker, total, main: ranked[0][0], secondShare, langs, firstAt: firstAt.get(speaker) };
+  });
+
+  // The interpreter is whoever uses a second language substantially.
+  const bilingual = profile.filter((p) => p.secondShare > 0.2)
+    .sort((a, b) => b.secondShare - a.secondShare);
+  const roles = {};
+  let interpreter = null;
+  if (bilingual.length) {
+    interpreter = bilingual[0];
+    roles[interpreter.speaker] = 'Interpreter';
+  }
+
+  const rest = profile.filter((p) => p !== interpreter);
+  if (rest.length && interpreter) {
+    // Which of the two remaining is the clinician cannot be read from the interpreter's
+    // languages — an interpreter speaks both about equally. Order settles it: the clinician
+    // opens the encounter, which is also why they are the first voice heard.
+    const clinician = rest.sort((a, b) => a.firstAt - b.firstAt)[0];
+    roles[clinician.speaker] = 'Clinician';
+    for (const other of rest) if (other !== clinician) roles[other.speaker] = 'Patient';
+  }
+  return Object.keys(roles).length ? roles : null;
+}
+
 /** With a diarizing model, a change of speaker also starts a new paragraph. */
 function splitOnSpeaker(r, paragraphs) {
   const out = [];
@@ -824,7 +899,9 @@ function renderParagraphs(r) {
     }
     if (para.speaker || (para.added && hasSpeakers)) {
       if (!para.speaker) para.speaker = [...r.voiceHues.keys()][0];
-      const voiceChip = chip(`Speaker ${para.speaker}`, hueFor(r.voiceHues, para.speaker), 'voice');
+      const role = r.roles && r.roles[para.speaker];
+      const voiceChip = chip(role || `Speaker ${para.speaker}`, hueFor(r.voiceHues, para.speaker), 'voice');
+      if (role) voiceChip.title = `Speaker ${para.speaker} — identified as the ${role.toLowerCase()} from the languages spoken`;
       voiceChip.classList.add('editableChip');
       voiceChip.title = 'Click to reassign this paragraph to another speaker';
       voiceChip.onclick = (event) => {
@@ -1526,7 +1603,7 @@ const csvRows = (r) => {
         to == null ? '' : fmtClock(to),
         from == null ? '' : from.toFixed(2),
         langName(para.lang),
-        para.speaker ? `Speaker ${para.speaker}` : '',
+        para.speaker ? ((r.roles && r.roles[para.speaker]) || `Speaker ${para.speaker}`) : '',
         para.interpreter ? 'yes' : '',
         para.added ? 'added' : (para.editedText != null ? 'yes' : ''),
         para.added ? '' : paragraphConfidence(r, para).toFixed(2),

@@ -130,7 +130,8 @@ const cosine = (a, b) => {
  * label came from. Rewrites `speaker` so the same voice carries one label throughout.
  * Returns a report for logging/tests.
  */
-function unifySpeakers(units, buffer, override = null) {
+function unifySpeakers(units, buffer, options = {}) {
+  const { override = null, target = null } = options;
   const timed = units.filter((u) => u.speaker && u.start != null);
   if (!timed.length) return null;
 
@@ -186,7 +187,11 @@ function unifySpeakers(units, buffer, override = null) {
         if (!best || score > best.score) best = { i, j, score };
       }
     }
-    if (!best || best.score < threshold) break;
+    // When the number of people is known, keep merging the closest pair until that many
+    // voices remain — on a real 22-minute consultation the threshold alone left 10 voices
+    // where there were 3, because each part is recorded under slightly different conditions.
+    const needsFewer = target && clusters.length > target;
+    if (!best || (!needsFewer && best.score < threshold)) break;
 
     const a = clusters[best.i];
     const b = clusters[best.j];
@@ -225,6 +230,7 @@ function unifySpeakers(units, buffer, override = null) {
 
   return {
     voices: clusters.length,
+    target,
     prints: prints.length,
     threshold: +threshold.toFixed(3),
     calibratedFrom: sameRequestMax == null ? 'default' : +sameRequestMax.toFixed(3),
