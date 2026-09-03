@@ -7,6 +7,7 @@ services:
     plan: starter          # free spins down after 15 min idle; a wake-up costs ~1 min
     buildCommand: npm install
     startCommand: node server.js
+    autoDeployTrigger: commit
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
