@@ -21,7 +21,10 @@ const HOST = process.env.HOST || (ON_HOST ? '0.0.0.0' : '127.0.0.1');
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
 
 // Chunk sizes are tunable because hosting proxies cut long requests (Render's is ~100 s).
-const CHUNK_SECONDS = Number(process.env.CHUNK_SECONDS) || 600;
+// Two minutes, measured: on a 22-minute bilingual consultation with a known script,
+// 11-minute parts captured 53 of 61 scripted utterances and 2-minute parts captured 58.
+// Long parts quietly drop short interjections ("from what?", "have what?").
+const CHUNK_SECONDS = Number(process.env.CHUNK_SECONDS) || 120;
 const DIARIZE_CHUNK_SECONDS = Number(process.env.DIARIZE_CHUNK_SECONDS) || 180;
 const OPENAI_URL = 'https://api.openai.com/v1/audio/transcriptions';
 const MAX_UPLOAD = 26 * 1024 * 1024;        // OpenAI caps a single request at 25 MB

@@ -9,7 +9,7 @@ const DIRECT_LIMIT = 24 * 1024 * 1024;  // send the file untouched below this
 // Chunk lengths come from the server so a deployment can shorten them to fit a hosting
 // proxy's request timeout. The diarizing model needs roughly half the audio's duration to
 // process, so long chunks hit OpenAI's own gateway timeout (a 10-minute chunk returns 500).
-let CHUNK_SECONDS = 600;     // 10 min @16 kHz mono ≈ 19 MB — under the 25 MB request limit
+let CHUNK_SECONDS = 120;     // long parts drop short interjections; see the server for the measurement
 let DIARIZE_CHUNK_SECONDS = 180;
 const REQUEST_CONCURRENCY = 3;
 const SPLIT_SLACK = 25;      // seconds either side of a target cut we may move to find silence
@@ -626,10 +626,10 @@ async function transcribe() {
       // A different model, not just different boundaries: re-running the same one repeats
       // its own omissions. On a 22-minute consultation the same model recovered nothing,
       // while a second model had heard 16 passages this one had missed.
-      // Measured on a 22-minute bilingual consultation: gpt-4o-mini-transcribe surfaced 3
-      // passages the first pass had missed, the diarizing model 16. It is slower, but it
-      // is the one that actually hears what the others drop.
-      const other = opts.model.includes('diarize') ? 'gpt-4o-transcribe' : 'gpt-4o-transcribe-diarize';
+      // Never the diarizing model here: it cannot take the verbatim instruction and
+      // translates instead of transcribing, so merging its output turned a bilingual
+      // transcript into an English one.
+      const other = opts.model === 'gpt-4o-transcribe' ? 'gpt-4o-mini-transcribe' : 'gpt-4o-transcribe';
       setStatus(`Second pass with ${other} — catching sentences the first pass missed…`, 88);
       try {
         const second = await runTranscription(

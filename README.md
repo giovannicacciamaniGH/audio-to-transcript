@@ -57,6 +57,21 @@ Things that specifically matter on Render:
    Error`. So diarized runs are cut into **3-minute** parts and everything else into
    10-minute parts. A 21-minute call now transcribes in about 4 minutes.
 
+   **Parts are two minutes long.** This is the single biggest factor in how much gets
+   transcribed, and it was measured against a scripted 22-minute Spanish/English interpreter
+   consultation whose 61 utterances are known in advance:
+
+   | part length | scripted utterances captured |
+   |---|---|
+   | 11 minutes (plus a second recovery pass) | 53 / 61 |
+   | **2 minutes, single pass** | **58 / 61** |
+
+   Long parts quietly drop short interjections — "from what?", "have what?", "yes it is,
+   yeah." Isolating one of them proved it was the part length, not the audio: on an
+   11-minute part the model missed "from what?", and on a 60-second window covering the same
+   moment it transcribed it. Parts that are *too* short are worse still (a 19-second part
+   returned 10 words where 60 were spoken), so two minutes is the balance.
+
    **Parts are cut into equal lengths, never a target size plus a remainder.** Short
    requests lose content badly — measured on 152 seconds of unbroken speech carrying 30
    utterances: a 19-second trailing part returned 10 words where 60 were spoken (27/30
@@ -117,7 +132,7 @@ Things that specifically matter on Render:
    any passage that model heard which is missing from your transcript. This is the only
    real check on what a speech model silently left out.
 
-### The second pass
+### The second pass (optional)
 
 Speech models drop sentences, and they do not drop the same ones twice. On one 22-minute
 bilingual consultation the *same* model on the *same* audio returned 2649, 2283 and 2319
@@ -131,9 +146,13 @@ enlarged here").
 
 Two details that took measuring to get right:
 
-- **A second pass with the same model is nearly useless** — it repeats its own omissions
-  (3 recovered). The diarizing model, which is poor at transcribing, turns out to be the
-  best second opinion precisely because it fails differently (48 recovered).
+- **A second pass with the same model is nearly useless** — it repeats its own omissions.
+- **It must not be the diarizing model.** That model cannot take the verbatim instruction
+  and translates rather than transcribes, so merging its output turned a balanced
+  bilingual transcript into a largely English one. The recovery pass uses
+  `gpt-4o-mini-transcribe`, which honours the instruction.
+- With two-minute parts the first pass already captures 58 of 61, so this pass is off by
+  default: it doubles cost for the last few utterances.
 - **Deciding what is "missing" cannot be done by word overlap.** Consultations repeat stock
   phrases, so a dropped sentence shares nearly every word with its neighbours: on a
   repetitive transcript with three sentences removed, an overlap test recovered none of
