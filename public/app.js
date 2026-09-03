@@ -545,8 +545,37 @@ async function runTranscription(opts, note) {
  * Measured on 86 s of overlapping speech with background noise: one pass captured 17 of 24
  * utterances, a pass with shifted boundaries captured 11, and the union captured 21.
  */
+/**
+ * Short interjections ("have what?", "Tiene sentido.") are too small to judge on their own
+ * words — every word in them occurs elsewhere. They are recovered by their neighbours
+ * instead: if the sentences on both sides of one are already in the transcript and it is
+ * not, it sits in a genuine hole between two anchors.
+ */
+function recoverBetweenAnchors(primaryText, units, alreadyFound) {
+  const present = wordRuns(allWords(primaryText), RUN_LENGTH);
+  const isAnchored = (unit) => {
+    const runs = wordRuns(allWords(unit.text), RUN_LENGTH);
+    for (const run of runs) if (present.has(run)) return true;
+    return false;
+  };
+  const taken = new Set(alreadyFound);
+  const extra = [];
+
+  for (let i = 1; i < units.length - 1; i++) {
+    const unit = units[i];
+    if (taken.has(unit)) continue;
+    const words = allWords(unit.text);
+    if (!words.length || words.length > 6) continue;          // only short utterances here
+    if (isAnchored(unit)) continue;                            // already in the transcript
+    if (!isAnchored(units[i - 1]) || !isAnchored(units[i + 1])) continue;  // needs both anchors
+    extra.push(unit);
+  }
+  return extra;
+}
+
 function mergeRecovered(primary, extraUnits) {
   const recovered = findMissing(primary.text, extraUnits, primary.units);
+  recovered.push(...recoverBetweenAnchors(primary.text, extraUnits, recovered));
   if (!recovered.length) return 0;
 
   for (const unit of recovered) unit.recovered = true;
